@@ -1,5 +1,7 @@
 # Arabic Coach App
 
+**Version 0.2:** the full Arabic Coach (Words, Test, Chats, Drive, Study, Review, Forms, Talk, Ask) runs as `public/coach.html`. `public/claude-shim.js` gives it two services: `db` (each learner's saved data in the Supabase table `docs`) and `sample` (the Supabase Edge Function `sample`, which asks Claude). `app/page.js` is the sign-in page.
+
 Saudi spoken Arabic for expat professionals, explained in Hindi, Urdu or English. Version 0.1 (testing).
 
 ## What's in version 0.1

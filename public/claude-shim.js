@@ -77,6 +77,7 @@
   var sample = {
     json: function (input, opts) {
       var tier = opts && opts.modelTier === "quick" ? "quick" : "default";
+      window.__acSampleCalls = (window.__acSampleCalls || 0) + 1; // lets other parts of the app see a real coach call happened
       return sb.functions.invoke("sample", { body: { input: input, tier: tier } }).then(async function (r) {
         if (r.error) {
           var info = {};

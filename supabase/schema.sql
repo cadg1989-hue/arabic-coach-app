@@ -153,3 +153,8 @@ begin
   end if;
   return new;
 end $$;
+
+-- ===== v0.3.2 (migration retire_old_reserve_call): the 3-argument version always refuses =====
+create or replace function public.reserve_call(p_user uuid, p_day date, p_limit int)
+returns int language sql security definer set search_path = public as $$ select null::int $$;
+revoke execute on function public.reserve_call(uuid, date, int) from public, anon, authenticated;

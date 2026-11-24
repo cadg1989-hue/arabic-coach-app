@@ -39,6 +39,7 @@
 
   /* ---------- state ---------- */
   var X = { total: 0, days: {}, goal: 50, freezes: 1, badges: {}, combo: 0, bestCombo: 0, muted: false, goalsHit: 0, lastGoalDay: "" };
+  var pending = { total: 0, days: {} }; // XP earned on this phone that the account copy does not have yet
   var db = null, saveT = 0, loaded = false;
   var LS = "ac.xp";
 
@@ -48,13 +49,19 @@
     saveT = setTimeout(function () {
       if (!db || !loaded) return; // never overwrite the account's copy before it has been read
       var keys = Object.keys(X.days).sort(); while (keys.length > 60) delete X.days[keys.shift()];
-      db.doc("coach/xp").set(JSON.parse(JSON.stringify(X))).catch(function (e) { console.warn("xp save", e); });
+      var sent = JSON.parse(JSON.stringify(pending));
+      db.doc("coach/xp").set(JSON.parse(JSON.stringify(X))).then(function () {
+        pending.total -= sent.total; Object.keys(sent.days).forEach(function (k) { pending.days[k] = (pending.days[k] || 0) - sent.days[k]; });
+      }).catch(function (e) { console.warn("xp save", e); });
     }, 1200);
   }
   function merge(r) {
     if (!r) return;
-    X.total = Math.max(X.total || 0, r.total || 0);
-    Object.keys(r.days || {}).forEach(function (k) { X.days[k] = Math.max(X.days[k] || 0, r.days[k] || 0); });
+    // The account copy is the truth; add what this phone earned that the account hasn't seen yet.
+    X.total = (r.total || 0) + pending.total;
+    var days = {}; Object.keys(r.days || {}).forEach(function (k) { days[k] = r.days[k] || 0; });
+    Object.keys(pending.days).forEach(function (k) { days[k] = (days[k] || 0) + pending.days[k]; });
+    X.days = days;
     X.badges = Object.assign({}, r.badges || {}, X.badges);
     ["goal", "muted"].forEach(function (k) { if (r[k] != null && !loaded) X[k] = r[k]; });
     X.freezes = Math.max(0, Math.min(2, r.freezes != null ? r.freezes : X.freezes));
@@ -190,6 +197,7 @@
       if (e.key === "Tab") { // keep focus inside the dialog
         var f = [].slice.call(sheet.querySelectorAll("button")); if (!f.length) return;
         var i = f.indexOf(document.activeElement);
+        if (i < 0) { e.preventDefault(); f[0].focus(); return; }
         if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
       }
     };
@@ -208,6 +216,7 @@
     if (!n) return;
     var beforeLevel = levelOf(X.total), beforeToday = todayXP();
     X.total += n; X.days[DAY()] = beforeToday + n;
+    pending.total += n; pending.days[DAY()] = (pending.days[DAY()] || 0) + n;
     if (!quiet) toast('<b>+' + n + ' XP</b>' + (why ? ' · ' + why : ''), 1300);
     if (beforeToday < X.goal && todayXP() >= X.goal && X.lastGoalDay !== DAY()) {
       X.goalsHit = (X.goalsHit || 0) + 1; X.lastGoalDay = DAY();
@@ -320,8 +329,8 @@
       try { if (this.n >= 0 && turns.length >= this.n + 2) award(5, T("spoke Arabic", "अरबी बोली")); } catch (e) {}
     });
     // XP only for a new explanation, not for reopening one already saved
-    wrap("explainSentence", function (a) { try { this.k = expKey(a[0]); this.had = !!EXP[this.k]; } catch (e) { this.had = true; } }, function () {
-      try { if (!this.had && EXP[this.k]) award(2, null, true); } catch (e) {}
+    wrap("explainSentence", function () { this.n = window.__acSampleCalls || 0; }, function () {
+      if ((window.__acSampleCalls || 0) > this.n) award(2, null, true); // only when the coach wrote a new explanation
     });
     wrap("stats", null, function () { render(); });
   }

@@ -22,12 +22,14 @@ function speak(text) {
 const Speak = ({ text }) => <button className="btn ghost small" type="button" onClick={() => speak(text)} aria-label="Listen">🔊</button>;
 
 async function callAI(payload) {
-  const { data } = await sb().auth.getSession();
-  const token = data.session?.access_token;
-  const r = await fetch("/api/ai", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(payload) });
-  const j = await r.json().catch(() => ({ error: "Network problem. Please try again." }));
-  if (!r.ok) throw new Error(j.error || "Something went wrong.");
-  return j;
+  // The "ai" function in Supabase checks who you are, your daily limit, then asks Claude.
+  const { data, error } = await sb().functions.invoke("ai", { body: payload });
+  if (error) {
+    let msg = "Something went wrong. Please try again.";
+    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
+  return data;
 }
 
 const T = {
@@ -318,7 +320,7 @@ function ChatRoom({ profile, index, onBack, onActive }) {
     setMsgs(next); setText(""); setBusy(true); setErr("");
     const turns = next.filter((m) => m.role !== "fix").map((m) => m.role === "me" ? { role: "user", text: m.text } : { role: "assistant", text: `${m.ar} (${m.tr})` });
     try {
-      const { result: r } = await callAI({ kind: "chat", scenario: index, turns });
+      const { result: r } = await callAI({ kind: "chat", scene: sc, turns });
       const add = [];
       if (r.fix) add.push({ role: "fix", ...r.fix });
       add.push({ role: "them", ar: r.ar, tr: r.tr, en: r.en });

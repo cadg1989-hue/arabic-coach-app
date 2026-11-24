@@ -74,3 +74,11 @@ returns void language sql security definer set search_path = public as $$
       output_tokens = usage.output_tokens + excluded.output_tokens;
 $$;
 revoke execute on function public.add_usage from public, anon, authenticated;
+
+-- Table access (new Supabase projects grant nothing by default). Row-level security still limits each learner to their own rows.
+revoke all on public.profiles, public.progress, public.usage, public.explain_cache from anon, authenticated;
+grant select, insert on public.profiles to authenticated;
+grant update (name, explain_lang, goal, new_per_day, streak, last_day) on public.profiles to authenticated;
+grant select, insert, update, delete on public.progress to authenticated;
+grant select on public.usage to authenticated;
+grant all on public.profiles, public.progress, public.usage, public.explain_cache to service_role;

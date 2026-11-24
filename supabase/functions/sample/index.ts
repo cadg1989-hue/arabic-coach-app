@@ -6,6 +6,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const MODELS: Record<string, string> = { quick: "claude-haiku-5-5", default: "claude-sonnet-5-5" };
 const MAX_TOKENS: Record<string, number> = { quick: 1500, default: 4000 };
 const DAILY_LIMIT: Record<string, number> = { free: 40, pro: 500, company: 500 };
+const DAILY_OUTPUT_TOKENS: Record<string, number> = { free: 60000, pro: 600000, company: 600000 }; // cost ceiling per learner per day
 const MAX_CHARS = 24000; // total prompt size accepted from the phone (the longest coach prompt is about 12,000)
 
 const CORS = {
@@ -61,7 +62,7 @@ Deno.serve(async (req) => {
   const day = riyadhDay();
   const limit = DAILY_LIMIT[plan] ?? DAILY_LIMIT.free;
   // Reserve this call first, in one atomic step, so parallel requests can't slip past the daily limit.
-  const { data: used, error: resErr } = await db.rpc("reserve_call", { p_user: user.id, p_day: day, p_limit: limit });
+  const { data: used, error: resErr } = await db.rpc("reserve_call", { p_user: user.id, p_day: day, p_limit: limit, p_max_out: DAILY_OUTPUT_TOKENS[plan] ?? DAILY_OUTPUT_TOKENS.free });
   if (resErr) { console.error("reserve_call", resErr.message); return json({ code: "unavailable", error: "The coach is busy. Please try again in a moment." }, 503); }
   if (used == null) {
     return json({ code: "rate_limited", limit: true, error: plan === "free"
@@ -73,6 +74,7 @@ Deno.serve(async (req) => {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) { console.error("ANTHROPIC_API_KEY is not set"); await refund(); return json({ code: "unavailable", error: "The coach isn't set up yet. Please try again later." }, 503); }
 
+  let billed = false; // once Claude has answered, the call has cost money and is never refunded
   const callClaude = async () => {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -86,6 +88,7 @@ Deno.serve(async (req) => {
     });
     if (!r.ok) { const t = (await r.text()).slice(0, 400); throw Object.assign(new Error("anthropic " + r.status + " " + t), { status: r.status }); }
     const d = await r.json();
+    billed = true;
     const u = d.usage || {};
     await db.rpc("add_tokens", { p_user: user.id, p_day: day, p_in: u.input_tokens || 0, p_out: u.output_tokens || 0 });
     return (d.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
@@ -100,7 +103,7 @@ Deno.serve(async (req) => {
     return json({ result: parseJson(text), left: limit - used });
   } catch (e) {
     console.error("coach failed", (e as Error).message, text.slice(0, 160));
-    await refund();
+    if (!billed) await refund();
     const status = (e as any).status;
     return json({ code: status === 429 ? "rate_limited" : text ? "invalid_json" : "unavailable",
       error: text ? "The coach's answer came back garbled. Try again." : "The coach is busy. Please try again in a moment." }, 502);

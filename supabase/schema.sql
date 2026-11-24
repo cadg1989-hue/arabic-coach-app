@@ -131,3 +131,25 @@ end $$;
 revoke execute on function public.docs_quota from public, anon, authenticated;
 drop trigger if exists docs_quota on public.docs;
 create trigger docs_quota before insert on public.docs for each row execute function public.docs_quota();
+
+-- ===== v0.3.1 (migration token_budget_and_quota_fix) =====
+create or replace function public.reserve_call(p_user uuid, p_day date, p_limit int, p_max_out bigint)
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  insert into public.usage (user_id, day, calls) values (p_user, p_day, 0) on conflict (user_id, day) do nothing;
+  update public.usage set calls = calls + 1
+   where user_id = p_user and day = p_day and calls < p_limit and output_tokens < p_max_out
+   returning calls into n;
+  return n;
+end $$;
+revoke execute on function public.reserve_call(uuid, date, int, bigint) from public, anon, authenticated;
+grant execute on function public.reserve_call(uuid, date, int, bigint) to service_role;
+create or replace function public.docs_quota() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from public.docs where user_id = new.user_id and path = new.path) then return new; end if;
+  if (select count(*) from public.docs where user_id = new.user_id) >= 3000 then
+    raise exception 'storage quota reached' using errcode = 'P0001';
+  end if;
+  return new;
+end $$;

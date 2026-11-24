@@ -82,3 +82,52 @@ grant update (name, explain_lang, goal, new_per_day, streak, last_day) on public
 grant select, insert, update, delete on public.progress to authenticated;
 grant select on public.usage to authenticated;
 grant all on public.profiles, public.progress, public.usage, public.explain_cache to service_role;
+
+-- ===== Version 0.2/0.3 (applied as migrations learner_docs, docs_size_cap, usage_reservation_and_quota) =====
+create table if not exists public.docs (
+  user_id uuid not null references auth.users(id) on delete cascade default auth.uid(),
+  path text not null check (length(path) between 1 and 200),
+  data jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, path)
+);
+alter table public.docs enable row level security;
+create policy "own docs" on public.docs for all using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+revoke all on public.docs from anon, authenticated;
+grant select, insert, update, delete on public.docs to authenticated;
+grant all on public.docs to service_role;
+create index if not exists docs_user_path_prefix on public.docs (user_id, path text_pattern_ops);
+alter table public.docs add constraint docs_size_cap check (octet_length(data::text) <= 300000);
+
+create or replace function public.reserve_call(p_user uuid, p_day date, p_limit int)
+returns int language plpgsql security definer set search_path = public as $$
+declare n int;
+begin
+  insert into public.usage (user_id, day, calls) values (p_user, p_day, 0) on conflict (user_id, day) do nothing;
+  update public.usage set calls = calls + 1 where user_id = p_user and day = p_day and calls < p_limit returning calls into n;
+  return n;
+end $$;
+revoke execute on function public.reserve_call from public, anon, authenticated;
+grant execute on function public.reserve_call to service_role;
+create or replace function public.add_tokens(p_user uuid, p_day date, p_in bigint, p_out bigint)
+returns void language sql security definer set search_path = public as $$
+  update public.usage set input_tokens = input_tokens + p_in, output_tokens = output_tokens + p_out where user_id = p_user and day = p_day;
+$$;
+revoke execute on function public.add_tokens from public, anon, authenticated;
+grant execute on function public.add_tokens to service_role;
+create or replace function public.refund_call(p_user uuid, p_day date)
+returns void language sql security definer set search_path = public as $$
+  update public.usage set calls = greatest(calls - 1, 0) where user_id = p_user and day = p_day;
+$$;
+revoke execute on function public.refund_call from public, anon, authenticated;
+grant execute on function public.refund_call to service_role;
+create or replace function public.docs_quota() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (select count(*) from public.docs where user_id = new.user_id) >= 3000 then
+    raise exception 'storage quota reached' using errcode = 'P0001';
+  end if;
+  return new;
+end $$;
+revoke execute on function public.docs_quota from public, anon, authenticated;
+drop trigger if exists docs_quota on public.docs;
+create trigger docs_quota before insert on public.docs for each row execute function public.docs_quota();

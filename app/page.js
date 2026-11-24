@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import { sb } from "../lib/supabase";
 
 // Sign-in page. Once signed in, the learner goes straight to the full coach (public/coach.html).
+let entering = false;
 async function enter(session) {
+  if (entering) return; entering = true;
   // Every learner has a plan row (free by default); the coach function reads it for daily limits.
   const s = sb();
   const { data } = await s.from("profiles").select("id").eq("id", session.user.id).maybeSingle();
@@ -30,7 +32,9 @@ export default function SignIn() {
     e.preventDefault(); setBusy(true); setMsg("");
     const { error } = await sb().auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } });
     setBusy(false);
-    if (error) setMsg(/rate|seconds/i.test(error.message) ? "Too many sign-in emails just now. Please wait a minute and try again." : error.message);
+    if (error) setMsg(/rate|seconds/i.test(error.message) ? "Too many sign-in emails just now. Please wait a minute and try again."
+      : /not authorized|not_authorized/i.test(error.message + (error.code || "")) ? "Sign-ups are invite-only during testing. Ask the app owner to add your email."
+      : "Couldn't send the email. Check the address and try again.");
     else setSent(true);
   }
   async function verify(e) {

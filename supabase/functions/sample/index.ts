@@ -4,9 +4,9 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const MODELS: Record<string, string> = { quick: "claude-haiku-5-5", default: "claude-sonnet-5-5" };
-const MAX_TOKENS: Record<string, number> = { quick: 2000, default: 6000 };
-const DAILY_LIMIT: Record<string, number> = { free: 60, pro: 1000, company: 1000 };
-const MAX_CHARS = 60000; // total prompt size accepted from the phone
+const MAX_TOKENS: Record<string, number> = { quick: 1500, default: 4000 };
+const DAILY_LIMIT: Record<string, number> = { free: 40, pro: 500, company: 500 };
+const MAX_CHARS = 24000; // total prompt size accepted from the phone (the longest coach prompt is about 12,000)
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -59,46 +59,50 @@ Deno.serve(async (req) => {
   const { data: profile } = await db.from("profiles").select("plan").eq("id", user.id).maybeSingle();
   const plan = profile?.plan || "free";
   const day = riyadhDay();
-  const { data: use } = await db.from("usage").select("calls").eq("user_id", user.id).eq("day", day).maybeSingle();
   const limit = DAILY_LIMIT[plan] ?? DAILY_LIMIT.free;
-  if ((use?.calls || 0) >= limit) {
+  // Reserve this call first, in one atomic step, so parallel requests can't slip past the daily limit.
+  const { data: used, error: resErr } = await db.rpc("reserve_call", { p_user: user.id, p_day: day, p_limit: limit });
+  if (resErr) { console.error("reserve_call", resErr.message); return json({ code: "unavailable", error: "The coach is busy. Please try again in a moment." }, 503); }
+  if (used == null) {
     return json({ code: "rate_limited", limit: true, error: plan === "free"
       ? "You've used today's free coach practice. Come back tomorrow, or upgrade to Pro for more."
       : "Daily limit reached. Try again tomorrow." }, 429);
   }
+  const refund = () => db.rpc("refund_call", { p_user: user.id, p_day: day });
 
   const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) { console.error("ANTHROPIC_API_KEY is not set"); return json({ code: "unavailable", error: "The coach isn't set up yet. Please try again later." }, 503); }
+  if (!key) { console.error("ANTHROPIC_API_KEY is not set"); await refund(); return json({ code: "unavailable", error: "The coach isn't set up yet. Please try again later." }, 503); }
 
-  let r: Response;
-  try {
-    r = await fetch("https://api.anthropic.com/v1/messages", {
+  const callClaude = async () => {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({
         model: MODELS[tier],
         max_tokens: MAX_TOKENS[tier],
-        system: "You are the AI coach inside Arabic Coach, an app that teaches spoken Saudi Arabic. Follow the user's instructions exactly. Reply with ONLY valid JSON, no markdown fences and no text before or after it.",
+        system: "You are the AI coach inside Arabic Coach, an app that teaches spoken Saudi Arabic. Follow the user's instructions exactly. Reply with ONLY valid JSON, no markdown fences and no text before or after it. Escape every double quote inside JSON strings.",
         messages,
       }),
     });
-  } catch (e) {
-    console.error("anthropic fetch failed", (e as Error).message);
-    return json({ code: "unavailable", error: "The coach is busy. Please try again in a moment." }, 502);
-  }
-  if (!r.ok) {
-    console.error("anthropic error", r.status, (await r.text()).slice(0, 400));
-    return json({ code: r.status === 429 ? "rate_limited" : "unavailable", error: "The coach is busy. Please try again in a moment." }, 502);
-  }
-  const d = await r.json();
-  const usage = d.usage || { input_tokens: 0, output_tokens: 0 };
-  await db.rpc("add_usage", { p_user: user.id, p_day: day, p_in: usage.input_tokens || 0, p_out: usage.output_tokens || 0 });
+    if (!r.ok) { const t = (await r.text()).slice(0, 400); throw Object.assign(new Error("anthropic " + r.status + " " + t), { status: r.status }); }
+    const d = await r.json();
+    const u = d.usage || {};
+    await db.rpc("add_tokens", { p_user: user.id, p_day: day, p_in: u.input_tokens || 0, p_out: u.output_tokens || 0 });
+    return (d.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
+  };
 
-  const text = (d.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
+  let text = "";
   try {
-    return json({ result: parseJson(text), left: limit - (use?.calls || 0) - 1 });
-  } catch {
-    console.error("non-json reply", d.stop_reason, text.slice(0, 200));
-    return json({ code: "invalid_json", error: "The coach's answer came back garbled. Try again." }, 502);
+    text = await callClaude();
+    try { return json({ result: parseJson(text), left: limit - used }); } catch { /* garbled JSON: one retry below */ }
+    console.warn("non-json reply, retrying once", text.slice(0, 160));
+    text = await callClaude();
+    return json({ result: parseJson(text), left: limit - used });
+  } catch (e) {
+    console.error("coach failed", (e as Error).message, text.slice(0, 160));
+    await refund();
+    const status = (e as any).status;
+    return json({ code: status === 429 ? "rate_limited" : text ? "invalid_json" : "unavailable",
+      error: text ? "The coach's answer came back garbled. Try again." : "The coach is busy. Please try again in a moment." }, 502);
   }
 });

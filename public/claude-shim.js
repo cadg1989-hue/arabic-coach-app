@@ -10,7 +10,7 @@
   });
   window.acSupabase = sb;
 
-  var CACHE_KEYS = ["arabiccoach.cache.v1", "arabiccoach.v1"];
+  var CACHE_KEYS = ["arabiccoach.cache.v1", "arabiccoach.v1", "ac.xp"];
   var userId = null;
 
   // Wait for a signed-in learner; otherwise go to the sign-in page.
